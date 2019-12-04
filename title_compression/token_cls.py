@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
-    def __init__(self, text_a, token_labels=None):
+    def __init__(self, eid, text_a, token_labels=None):
         """Constructs a InputExample.
 
         Args:
@@ -43,6 +43,7 @@ class InputExample(object):
             label: (Optional) string. The label of the example. This should be
             specified for train and dev examples, but not for test examples.
         """
+        self.eid = eid
         self.text_a = text_a
         self.token_labels = token_labels
 
@@ -106,6 +107,7 @@ class TitleCompressionProcessor(DataProcessor):
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
+            eid = line[0]
             text_a = line[1]
             label = line[3]
             words = text_a.split(' ')
@@ -115,7 +117,7 @@ class TitleCompressionProcessor(DataProcessor):
             token_labels = ''.join([str(int(float(lb))) * len(word) for word, lb in zip(words, labels)])
             assert len(text_a) == len(token_labels), 'text %s with labels %s' % (text_a, token_labels)
             examples.append(
-                InputExample(text_a=text_a, token_labels=token_labels))
+                InputExample(eid = eid, text_a=text_a, token_labels=token_labels))
         return examples
 
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
@@ -138,6 +140,11 @@ def convert_char_labels_to_token_labels(tokens, labels):
     idx = 0
     token_labels = []
     for token in tokens:
+        # 这个可能有潜在问题
+        if token == '[UNK]':
+            token_labels.append(labels[idx])
+            idx += 1
+            continue
         if token[:2] == '##':
             token = token[2:]
         token_labels.append(labels[idx])
