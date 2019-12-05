@@ -1,0 +1,216 @@
+# -*- coding: utf-8 -*-
+import logging, os, io, csv
+import numpy as np
+import torch
+
+from pytorch_pretrained_bert.modeling import BertForTokenClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                    datefmt='%m/%d/%Y %H:%M:%S',
+                    level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def _truncate_seq_pair(tokens_a, tokens_b, max_length):
+    """Truncates a sequence pair in place to the maximum length."""
+
+    # This is a simple heuristic which will always truncate the longer sequence
+    # one token at a time. This makes more sense than truncating an equal percent
+    # of tokens from each, since if one sequence is very short then each token
+    # that's truncated likely contains more information than a longer sequence.
+    while True:
+        total_length = len(tokens_a) + len(tokens_b)
+        if total_length <= max_length:
+            break
+        if len(tokens_a) > len(tokens_b):
+            tokens_a.pop()
+        else:
+            tokens_b.pop()
+
+
+def convert_char_labels_to_token_labels(tokens, labels):
+    idx = 0
+    token_labels = []
+    for token in tokens:
+        # 这个可能有潜在问题
+        if token == '[UNK]':
+            token_labels.append(labels[idx])
+            idx += 1
+            continue
+        if token[:2] == '##':
+            token = token[2:]
+        token_labels.append(labels[idx])
+        idx += len(token)
+    return token_labels
+
+
+def get_bies_labels(tokens, words):
+    labels = []
+    for word in words:
+        if len(word) == 1:
+            labels += ['S']
+        else:
+            word_labels = ['B'] + ['I'] * (len(word) - 2) + ['E']
+            labels += word_labels
+    return convert_char_labels_to_token_labels(tokens, labels)
+
+
+class InputExample(object):
+    """A single training/test example for simple sequence classification."""
+
+    def __init__(self, eid, words, types, text_a, labels=None):
+        """Constructs a InputExample."""
+
+        self.eid = eid
+        self.words = words
+        self.types = types
+        self.text_a = text_a
+        self.labels = labels
+
+
+class InputFeatures(object):
+    """A single set of features of data."""
+
+    def __init__(self, input_ids, input_mask, segment_ids, label_ids):
+        self.input_ids = input_ids
+        self.input_mask = input_mask
+        self.segment_ids = segment_ids
+        self.label_ids = label_ids
+
+
+class DataProcessor(object):
+    """Base class for data converters for sequence classification data sets."""
+
+    def get_train_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the train set."""
+        raise NotImplementedError()
+
+    def get_dev_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the dev set."""
+        raise NotImplementedError()
+
+    def get_labels(self):
+        """Gets the list of labels for this data set."""
+        raise NotImplementedError()
+
+    @classmethod
+    def _read_tsv(cls, input_file, quotechar=None):
+        """Reads a tab separated value file."""
+        with io.open(input_file, "r", encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
+            lines = []
+            for line in reader:
+                lines.append(line)
+            return lines
+
+
+class TitleCompressionProcessor(DataProcessor):
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def get_BIES_labels(self):
+        return ['B', 'I', 'E', 'S']
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            eid = line[0]
+            words = line[1].split(' ')
+            types = line[2].split(' ')
+            labels = [int(float(lb)) for lb in line[3].split(' ')]
+            labels = np.asarray(labels)
+
+            text_a = ''.join(words)
+            examples.append(
+                InputExample(eid=eid, words=words, types=types, text_a=text_a, labels=labels))
+        return examples
+
+
+def convert_examples_to_features(examples, label_list, bies_list, max_seq_length, tokenizer):
+    """Loads a data file into a list of `InputBatch`s."""
+
+    label_map = {label: i for i, label in enumerate(label_list)}
+    bies_map = {label: i for i, label in enumerate(bies_list)}
+
+    features = []
+    for (ex_index, example) in enumerate(examples):
+        tokens_a = tokenizer.tokenize(example.text_a)
+
+        if len(tokens_a) > max_seq_length - 2:
+            tokens_a = tokens_a[:(max_seq_length - 2)]
+
+        tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
+
+        # segment_ids = [0] * len(tokens)
+
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        segment_ids = ['S'] + get_bies_labels(tokens_a, example.words) + ['S']
+        segment_ids = [bies_map[label] for label in segment_ids]
+
+        # The mask has 1 for real tokens and 0 for padding tokens. Only real
+        # tokens are attended to.
+        input_mask = [1] * len(input_ids)
+
+        # Zero-pad up to the sequence length.
+        padding = [0] * (max_seq_length - len(input_ids))
+        input_ids += padding
+        input_mask += padding
+        segment_ids += padding
+
+        labels = ''.join([str(lb) * len(word) for word, lb in zip(example.words, example.labels)])
+        token_labels = convert_char_labels_to_token_labels(tokens_a,  labels)
+        label_ids = [0] + [label_map[label] for label in token_labels] + [0]
+        label_ids += padding
+
+        assert len(input_ids) == max_seq_length
+        assert len(input_mask) == max_seq_length
+        assert len(segment_ids) == max_seq_length
+        assert len(label_ids) == max_seq_length, '%d' % len(label_ids)
+
+        if ex_index < 5:
+            logger.info("*** Example ***")
+            # logger.info("guid: %s" % example.guid)
+            logger.info("tokens: %s" % " ".join(
+                [str(x) for x in tokens]))
+            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+            logger.info(
+                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            logger.info("label: %s (id = %s)" % (''.join([str(lb) for lb in example.labels]),
+                                                 "".join([str(x) for x in label_ids])))
+
+        features.append(
+            InputFeatures(input_ids=input_ids,
+                          input_mask=input_mask,
+                          segment_ids=segment_ids,
+                          label_ids=label_ids))
+    return features
+
+
+def accuracy(out, labels, mask):
+    out = out.argmax(-1)
+    acc = np.sum(np.equal(out, labels) * mask)
+    return acc
+
+
+def load_model(dir, device, num_labels):
+    output_config_file = os.path.join(dir, CONFIG_NAME)
+    output_model_file = os.path.join(dir, WEIGHTS_NAME)
+    config = BertConfig(output_config_file)
+    model = BertForTokenClassification(config, num_labels=num_labels)
+    model.load_state_dict(torch.load(output_model_file, map_location=device))
+
+    return model

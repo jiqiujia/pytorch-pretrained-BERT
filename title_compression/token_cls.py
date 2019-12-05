@@ -10,6 +10,7 @@ import os
 import random
 import sys
 import io
+sys.path.append(".")
 
 import numpy as np
 import torch
@@ -17,218 +18,16 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
-
+from title_compression.utils import *
 from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from pytorch_pretrained_bert.modeling import BertForTokenClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 
-logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt = '%m/%d/%Y %H:%M:%S',
-                    level = logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                    datefmt='%m/%d/%Y %H:%M:%S',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-class InputExample(object):
-    """A single training/test example for simple sequence classification."""
-
-    def __init__(self, eid, text_a, token_labels=None):
-        """Constructs a InputExample.
-
-        Args:
-            text_a: string. The untokenized text of the first sequence. For single
-            sequence tasks, only this sequence must be specified.
-            text_b: (Optional) string. The untokenized text of the second sequence.
-            Only must be specified for sequence pair tasks.
-            label: (Optional) string. The label of the example. This should be
-            specified for train and dev examples, but not for test examples.
-        """
-        self.eid = eid
-        self.text_a = text_a
-        self.token_labels = token_labels
-
-class InputFeatures(object):
-    """A single set of features of data."""
-
-    def __init__(self, input_ids, input_mask, segment_ids, label_ids):
-        self.input_ids = input_ids
-        self.input_mask = input_mask
-        self.segment_ids = segment_ids
-        self.label_ids = label_ids
-
-
-class DataProcessor(object):
-    """Base class for data converters for sequence classification data sets."""
-
-    def get_train_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the train set."""
-        raise NotImplementedError()
-
-    def get_dev_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the dev set."""
-        raise NotImplementedError()
-
-    def get_labels(self):
-        """Gets the list of labels for this data set."""
-        raise NotImplementedError()
-
-    @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        """Reads a tab separated value file."""
-        with io.open(input_file, "r", encoding="utf-8") as f:
-            reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
-            lines = []
-            for line in reader:
-                lines.append(line)
-            return lines
-
-
-class TitleCompressionProcessor(DataProcessor):
-    """Processor for the MRPC data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in enumerate(lines):
-            if i == 0:
-                continue
-            eid = line[0]
-            text_a = line[1]
-            label = line[3]
-            words = text_a.split(' ')
-            labels = label.split(' ')
-
-            text_a = ''.join(words)
-            token_labels = ''.join([str(int(float(lb))) * len(word) for word, lb in zip(words, labels)])
-            assert len(text_a) == len(token_labels), 'text %s with labels %s' % (text_a, token_labels)
-            examples.append(
-                InputExample(eid = eid, text_a=text_a, token_labels=token_labels))
-        return examples
-
-def _truncate_seq_pair(tokens_a, tokens_b, max_length):
-    """Truncates a sequence pair in place to the maximum length."""
-
-    # This is a simple heuristic which will always truncate the longer sequence
-    # one token at a time. This makes more sense than truncating an equal percent
-    # of tokens from each, since if one sequence is very short then each token
-    # that's truncated likely contains more information than a longer sequence.
-    while True:
-        total_length = len(tokens_a) + len(tokens_b)
-        if total_length <= max_length:
-            break
-        if len(tokens_a) > len(tokens_b):
-            tokens_a.pop()
-        else:
-            tokens_b.pop()
-
-def convert_char_labels_to_token_labels(tokens, labels):
-    idx = 0
-    token_labels = []
-    for token in tokens:
-        # 这个可能有潜在问题
-        if token == '[UNK]':
-            token_labels.append(labels[idx])
-            idx += 1
-            continue
-        if token[:2] == '##':
-            token = token[2:]
-        token_labels.append(labels[idx])
-        idx += len(token)
-    return token_labels
-
-def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer):
-    """Loads a data file into a list of `InputBatch`s."""
-
-    label_map = {label : i for i, label in enumerate(label_list)}
-
-    features = []
-    for (ex_index, example) in enumerate(examples):
-        tokens_a = tokenizer.tokenize(example.text_a)
-
-        if len(tokens_a) > max_seq_length - 2:
-            tokens_a = tokens_a[:(max_seq_length - 2)]
-
-        # The convention in BERT is:
-        # (a) For sequence pairs:
-        #  tokens:   [CLS] is this jack ##son ##ville ? [SEP] no it is not . [SEP]
-        #  type_ids: 0   0  0    0    0     0       0 0    1  1  1  1   1 1
-        # (b) For single sequences:
-        #  tokens:   [CLS] the dog is hairy . [SEP]
-        #  type_ids: 0   0   0   0  0     0 0
-        #
-        # Where "type_ids" are used to indicate whether this is the first
-        # sequence or the second sequence. The embedding vectors for `type=0` and
-        # `type=1` were learned during pre-training and are added to the wordpiece
-        # embedding vector (and position vector). This is not *strictly* necessary
-        # since the [SEP] token unambigiously separates the sequences, but it makes
-        # it easier for the model to learn the concept of sequences.
-        #
-        # For classification tasks, the first vector (corresponding to [CLS]) is
-        # used as as the "sentence vector". Note that this only makes sense because
-        # the entire model is fine-tuned.
-        tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
-        segment_ids = [0] * len(tokens)
-
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # tokens are attended to.
-        input_mask = [1] * len(input_ids)
-
-        # Zero-pad up to the sequence length.
-        padding = [0] * (max_seq_length - len(input_ids))
-        input_ids += padding
-        input_mask += padding
-        segment_ids += padding
-
-        token_labels = convert_char_labels_to_token_labels(tokens_a, example.token_labels)
-        label_ids = [0] + [label_map[label] for label in token_labels] + [0]
-        label_ids += padding
-
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
-        assert len(label_ids) == max_seq_length, '%d' % len(label_ids)
-
-        if ex_index < 5:
-            logger.info("*** Example ***")
-            # logger.info("guid: %s" % example.guid)
-            logger.info("tokens: %s" % " ".join(
-                    [str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info(
-                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: %s (id = %s)" % (example.token_labels,
-                        "".join([str(x) for x in label_ids])))
-
-        features.append(
-                InputFeatures(input_ids=input_ids,
-                              input_mask=input_mask,
-                              segment_ids=segment_ids,
-                              label_ids=label_ids))
-    return features
-
-
-def accuracy(out, labels, mask):
-    out = out.argmax(-1)
-    acc = np.sum(np.equal(out, labels) * mask)
-    return acc
 
 
 def evaluate(model, eval_dataloader, device, global_step, args):
@@ -308,6 +107,7 @@ def main():
                         help="The maximum total input sequence length after WordPiece tokenization. \n"
                              "Sequences longer than this will be truncated, and sequences shorter \n"
                              "than this will be padded.")
+    parser.add_argument("--type_vocab_size", default=2, type=int)
     parser.add_argument("--do_train",
                         action='store_true',
                         help="Whether to run training.")
@@ -377,7 +177,7 @@ def main():
         ptvsd.wait_for_attach()
 
     processors = {
-        "tc" : TitleCompressionProcessor
+        "tc": TitleCompressionProcessor
     }
 
     if args.local_rank == -1 or args.no_cuda:
@@ -434,9 +234,13 @@ def main():
     # Prepare model
     cache_dir = args.cache_dir if args.cache_dir else os.path.join(PYTORCH_PRETRAINED_BERT_CACHE,
                                                                    'distributed_{}'.format(args.local_rank))
+    state_dict = torch.load(os.path.join(args.bert_model, WEIGHTS_NAME))
+    if args.type_vocab_size != 2:
+        del state_dict['bert.embeddings.token_type_embeddings.weight']
     model = BertForTokenClassification.from_pretrained(args.bert_model,
-                                                          cache_dir=cache_dir,
-                                                          num_labels=num_labels)
+                                                       cache_dir=cache_dir,
+                                                       num_labels=num_labels,
+                                                       state_dict=state_dict)
     if args.fp16:
         model.half()
     model.to(device)
@@ -486,7 +290,7 @@ def main():
     if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
         eval_examples = processor.get_dev_examples(args.data_dir)
         eval_features = convert_examples_to_features(
-            eval_examples, label_list, args.max_seq_length, tokenizer)
+            eval_examples, label_list, processor.get_BIES_labels(), args.max_seq_length, tokenizer)
         logger.info("***** Running evaluation *****")
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
@@ -502,7 +306,7 @@ def main():
     global_step = 0
     if args.do_train:
         train_features = convert_examples_to_features(
-            train_examples, label_list, args.max_seq_length, tokenizer)
+            train_examples, label_list, processor.get_BIES_labels(), args.max_seq_length, tokenizer)
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
@@ -539,7 +343,8 @@ def main():
                 tr_loss += loss.item()
                 nb_tr_examples += input_ids.size(0)
                 nb_tr_steps += 1
-                logger.info('epoch %d global_step %d lr %.8f loss %.3f', epoch, global_step, optimizer.get_lr()[0], tr_loss / nb_tr_steps)
+                logger.info('epoch %d global_step %d lr %.8f loss %.3f', epoch, global_step, optimizer.get_lr()[0],
+                            tr_loss / nb_tr_steps)
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     if args.fp16:
                         # modify learning rate with special warm up BERT uses
@@ -565,9 +370,9 @@ def main():
                 f.write(model_to_save.config.to_json_string())
 
             # Load a trained model and config that you have fine-tuned
-            #config = BertConfig(output_config_file)
-            #model = BertForTokenClassification(config, num_labels=num_labels)
-            #model.load_state_dict(torch.load(output_model_file))
+            # config = BertConfig(output_config_file)
+            # model = BertForTokenClassification(config, num_labels=num_labels)
+            # model.load_state_dict(torch.load(output_model_file))
 
     if eval_dataloader is not None:
         model.eval()
