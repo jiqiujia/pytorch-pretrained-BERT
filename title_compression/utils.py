@@ -2,6 +2,8 @@
 import logging, os, io, csv
 import numpy as np
 import torch
+import jieba
+from collections import defaultdict
 
 from pytorch_pretrained_bert.modeling import BertForTokenClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
 
@@ -105,6 +107,18 @@ class DataProcessor(object):
 
 
 class TitleCompressionProcessor(DataProcessor):
+    def __init__(self, type_words_dict : dict = None):
+        if type_words_dict is not None:
+            self.type_words_dict = type_words_dict
+            self.word_type_dict = {}
+            for type, words in self.type_words_dict.items():
+                for word in words:
+                    jieba.add_word(word)
+                    if word in self.word_type_dict:
+                        logger.info(word)
+                        if self.word_type_dict[word] == '品类':
+                            continue
+                    self.word_type_dict[word] = type
 
     def get_train_examples(self, data_dir):
         """See base class."""
@@ -115,6 +129,22 @@ class TitleCompressionProcessor(DataProcessor):
         """See base class."""
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        examples = []
+        with io.open(os.path.join(data_dir, "test.txt"), encoding='utf-8') as fin:
+            lines = fin.readlines()
+            for line in lines:
+                line = line.strip().lower()
+                words = list(jieba.cut(line))
+                words = [word for word in words if word in self.word_type_dict]
+                types = [self.word_type_dict.get(word, "") for word in words]
+                text = ''.join(words)
+                if len(text) == 0:
+                    continue
+                examples.append(InputExample(eid="", words=words, types=types,
+                                             text_a=text, labels=np.zeros(len(words), dtype=np.int8)))
+        return examples
 
     def get_labels(self):
         """See base class."""

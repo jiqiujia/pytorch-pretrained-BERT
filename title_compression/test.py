@@ -1,15 +1,23 @@
 # -*- coding: utf-8 -*-
 import io, os
+import sys
+sys.path.append(".")
 from title_compression.utils import *
 import argparse
 import torch
 import random
+import math
 from tqdm import tqdm
 
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 from pytorch_pretrained_bert.modeling import BertForTokenClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
 from pytorch_pretrained_bert.tokenization import BertTokenizer
+
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
 
 def get_word_pred_labels(segment_ids, logits, word_cnt):
     word_idx = 0
@@ -20,7 +28,7 @@ def get_word_pred_labels(segment_ids, logits, word_cnt):
             word_idx += 1
         if word_idx >= word_cnt:
             break
-    return word_logits.argmax(-1)
+    return sigmoid(word_logits[:, 1]) >= 0.3
 
 
 def main():
@@ -36,6 +44,9 @@ def main():
                         help="Bert pre-trained model selected in the list: bert-base-uncased, "
                              "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
                              "bert-base-multilingual-cased, bert-base-chinese.")
+    parser.add_argument("--do_eval",
+                        action='store_true',
+                        help="Whether to run eval on the dev set.")
     parser.add_argument("--task_name",
                         default=None,
                         type=str,
@@ -128,7 +139,16 @@ def main():
     if task_name not in processors:
         raise ValueError("Task not found: %s" % (task_name))
 
-    processor = processors[task_name]()
+    type_words_dict = {}
+    with io.open('title_compression/type_words.txt', encoding='utf-8') as fin:
+        lines = fin.readlines()
+        for line in lines:
+            arr = line.strip().split('\t')
+            type = arr[0]
+            words = arr[1].split(' ')
+            type_words_dict[type] = words
+
+    processor = processors[task_name](type_words_dict)
     label_list = processor.get_labels()
     num_labels = len(label_list)
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
@@ -140,7 +160,10 @@ def main():
         model.half()
     model.to(device)
 
-    eval_examples = processor.get_dev_examples(args.data_dir)
+    if args.do_eval:
+        eval_examples = processor.get_dev_examples(args.data_dir)
+    else:
+        eval_examples = processor.get_test_examples(args.data_dir)
     eval_features = convert_examples_to_features(
         eval_examples, label_list, processor.get_BIES_labels(), args.max_seq_length, tokenizer)
     logger.info("***** Running evaluation *****")
@@ -157,8 +180,11 @@ def main():
 
     eval_loss, eval_accuracy = 0, 0
     nb_eval_steps, nb_eval_examples = 0, 0
+    word_acc = 0.
+    word_num = 0
 
     pred_texts = []
+    example_idx = 0
     for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
@@ -174,24 +200,54 @@ def main():
         input_mask = input_mask.to('cpu').numpy()
         tmp_eval_accuracy = accuracy(logits, label_ids, input_mask)
 
-        pred_ids = logits.argmax(-1)
-        input_ids = input_ids.cpu().numpy()
-        for i in range(pred_ids.shape[0]):
-            retained_ids = input_ids[i][pred_ids[i] == 1]
-            retained_tokens = BertTokenizer.convert_ids_to_tokens(tokenizer, retained_ids)
-            pred_texts.append(''.join(retained_tokens))
+        # pred_ids = logits.argmax(-1)
+        # input_ids = input_ids.cpu().numpy()
+        # for i in range(pred_ids.shape[0]):
+        #     retained_ids = input_ids[i][pred_ids[i] == 1]
+        #     retained_tokens = BertTokenizer.convert_ids_to_tokens(tokenizer, retained_ids)
+        #     pred_texts.append(''.join(retained_tokens))
 
+        segment_ids = segment_ids.cpu().numpy()
+        for i in range(logits.shape[0]):
+            example = eval_examples[example_idx]
+            word_pred_labels = get_word_pred_labels(segment_ids[i], logits[i], len(example.words))
+            word_acc += np.sum(np.equal(word_pred_labels, example.labels))
+            word_num += len(example.words)
+            pred_words = [example.words[t] for t, lb in enumerate(word_pred_labels) if lb == 1]
+            pred_types = [example.types[t] for t, lb in enumerate(word_pred_labels) if lb == 1]
+            for i in range(len(pred_words)):
+                for j in range(len(pred_words)):
+                    if i != j and pred_words[i] in pred_words[j]:
+                        pred_words[i] = ''
+                        pred_types[i] = ''
+            pred_words = [word for word in pred_words if word != '']
+            product_idx = -1
+            for i in reversed(range(len(pred_words))):
+                if pred_types[i] == '品类':
+                    product_idx = i
+                    break
+            if product_idx >= 0 and product_idx != len(pred_words) - 1:
+                tmp = pred_words[product_idx]
+                pred_words[product_idx] = pred_words[-1]
+                pred_words[-1] = tmp
+            pred_texts.append(''.join(pred_words))
+            example_idx += 1
         eval_loss += tmp_eval_loss.mean().item()
         eval_accuracy += tmp_eval_accuracy
 
         nb_eval_examples += np.sum(input_mask)
         nb_eval_steps += 1
 
+        if nb_eval_steps > 10:
+            break
+
+
     eval_loss = eval_loss / nb_eval_steps
     eval_accuracy = eval_accuracy / nb_eval_examples
 
     print(eval_loss)
     print(eval_accuracy)
+    print(word_acc / word_num)
 
     with io.open('pred_res.txt', 'w+', encoding='utf-8') as fout:
         for example, pred_text in zip(eval_examples, pred_texts):
