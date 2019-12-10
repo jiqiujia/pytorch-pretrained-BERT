@@ -1121,6 +1121,76 @@ class BertForTokenClassification(BertPreTrainedModel):
             return logits
 
 
+class BertForMTTokenClassification(BertPreTrainedModel):
+    """BERT model for multi task token-level classification.
+    This module is composed of the BERT model with a linear layer on top of
+    the full hidden state of the last layer.
+
+    Params:
+        `config`: a BertConfig class instance with the configuration to build a new model.
+        `num_labels`: the number of classes for the classifier. Default = 2.
+        `num_crf_labels`: the number of classes for the classifier. Default = 2.
+
+    Inputs:
+        `input_ids`: a torch.LongTensor of shape [batch_size, sequence_length]
+            with the word token indices in the vocabulary(see the tokens preprocessing logic in the scripts
+            `extract_features.py`, `run_classifier.py` and `run_squad.py`)
+        `token_type_ids`: an optional torch.LongTensor of shape [batch_size, sequence_length] with the token
+            types indices selected in [0, 1]. Type 0 corresponds to a `sentence A` and type 1 corresponds to
+            a `sentence B` token (see BERT paper for more details).
+        `attention_mask`: an optional torch.LongTensor of shape [batch_size, sequence_length] with indices
+            selected in [0, 1]. It's a mask to be used if the input sequence length is smaller than the max
+            input sequence length in the current batch. It's the mask that we typically use for attention when
+            a batch has varying length sentences.
+        `labels`: labels for the classification output: torch.LongTensor of shape [batch_size, sequence_length]
+            with indices selected in [0, ..., num_labels].
+        `ner_labels`: labels for crf classification
+
+    Outputs:
+        if `labels` is not `None`:
+            Outputs the CrossEntropy classification loss of the output with the labels.
+        if `labels` is `None`:
+            Outputs the classification logits of shape [batch_size, sequence_length, num_labels].
+
+    """
+    def __init__(self, config, num_labels, num_ner_labels):
+        super(BertForMTTokenClassification, self).__init__(config)
+        self.num_labels = num_labels
+        self.num_ner_labels = num_ner_labels
+        self.bert = BertModel(config)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        # self.hidden1 = nn.Linear(config.hidden_size, config.hidden_size)
+        self.classifier = nn.Linear(config.hidden_size, num_labels)
+        # self.hidden2 = nn.Linear(config.hidden_size, self.hidden_size)
+        self.ner_classifier = nn.Linear(config.hidden_size, num_ner_labels)
+        self.apply(self.init_bert_weights)
+
+    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None, ner_labels=None):
+        sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+        sequence_output = self.dropout(sequence_output)
+        logits = self.classifier(sequence_output)
+        ner_logits = self.ner_classifier(sequence_output)
+
+        if labels is not None and ner_labels is not None:
+            loss_fct = CrossEntropyLoss()
+            # Only keep active parts of the loss
+            if attention_mask is not None:
+                active_loss = attention_mask.view(-1) == 1
+                active_logits = logits.view(-1, self.num_labels)[active_loss]
+                active_labels = labels.view(-1)[active_loss]
+                loss = loss_fct(active_logits, active_labels)
+
+                active_ner_logits = ner_logits.view(-1, self.num_ner_labels)[active_loss]
+                active_ner_labels = ner_labels.view(-1)[active_loss]
+                ner_loss = loss_fct(active_ner_logits, active_ner_labels)
+            else:
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+                ner_loss = loss_fct(logits.view(-1, self.num_ner_labels), ner_labels.view(-1))
+            return loss, ner_loss
+        else:
+            return logits, ner_logits
+
+
 class BertForQuestionAnswering(BertPreTrainedModel):
     """BERT model for Question Answering (span extraction).
     This module is composed of the BERT model with a linear layer on top of

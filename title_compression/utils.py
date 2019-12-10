@@ -41,7 +41,7 @@ def convert_char_labels_to_token_labels(tokens, labels):
             continue
         if token[:2] == '##':
             token = token[2:]
-        token_labels.append(labels[idx])
+        token_labels.append(labels[idx + len(token) - 1])
         idx += len(token)
     return token_labels
 
@@ -55,6 +55,19 @@ def get_bies_labels(tokens, words):
             word_labels = ['B'] + ['I'] * (len(word) - 2) + ['E']
             labels += word_labels
     return convert_char_labels_to_token_labels(tokens, labels)
+
+
+def get_ner_labels(tokens, words, types, ner_type_id):
+    ner_labels = []
+    for word, type in zip(words, types):
+        if len(type) == 1:
+            ner_labels += ['S_' + type]
+        elif len(type) > 1:
+            ner_labels += ['B_' + type] + ['I_' + type] * (len(word) - 2) + ['E_' + type]
+        else:
+            ner_labels += ['O'] * len(word)
+    ner_labels = np.asarray([ner_type_id.get(type) for type in ner_labels])
+    return convert_char_labels_to_token_labels(tokens, ner_labels)
 
 
 class InputExample(object):
@@ -73,11 +86,12 @@ class InputExample(object):
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_ids):
+    def __init__(self, input_ids, input_mask, segment_ids, label_ids, ner_label_ids):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.label_ids = label_ids
+        self.ner_label_ids = ner_label_ids
 
 
 class DataProcessor(object):
@@ -107,7 +121,7 @@ class DataProcessor(object):
 
 
 class TitleCompressionProcessor(DataProcessor):
-    def __init__(self, type_words_dict : dict = None):
+    def __init__(self, type_words_dict: dict = None, ner_type_id: dict = None):
         if type_words_dict is not None:
             self.type_words_dict = type_words_dict
             self.word_type_dict = {}
@@ -119,6 +133,7 @@ class TitleCompressionProcessor(DataProcessor):
                         if self.word_type_dict[word] == '品类':
                             continue
                     self.word_type_dict[word] = type
+        self.ner_type_id = ner_type_id
 
     def get_train_examples(self, data_dir):
         """See base class."""
@@ -169,7 +184,8 @@ class TitleCompressionProcessor(DataProcessor):
         return examples
 
 
-def convert_examples_to_features(examples, label_list, bies_list, max_seq_length, tokenizer):
+def convert_examples_to_features(examples: InputExample, label_list, bies_list, max_seq_length, tokenizer,
+                                 ner_type_id: dict=None):
     """Loads a data file into a list of `InputBatch`s."""
 
     label_map = {label: i for i, label in enumerate(label_list)}
@@ -201,9 +217,16 @@ def convert_examples_to_features(examples, label_list, bies_list, max_seq_length
         segment_ids += padding
 
         labels = ''.join([str(lb) * len(word) for word, lb in zip(example.words, example.labels)])
-        token_labels = convert_char_labels_to_token_labels(tokens_a,  labels)
+        token_labels = convert_char_labels_to_token_labels(tokens_a, labels)
         label_ids = [0] + [label_map[label] for label in token_labels] + [0]
         label_ids += padding
+
+        ner_label_ids = None
+        if ner_type_id is not None:
+            ner_label_ids = get_ner_labels(tokens_a, example.words, example.types, ner_type_id)
+            ner_label_ids = [ner_type_id['O']] + ner_label_ids + [ner_type_id['O']]
+            ner_label_ids += padding
+            assert len(ner_label_ids) == max_seq_length
 
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
@@ -221,12 +244,15 @@ def convert_examples_to_features(examples, label_list, bies_list, max_seq_length
                 "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
             logger.info("label: %s (id = %s)" % (''.join([str(lb) for lb in example.labels]),
                                                  "".join([str(x) for x in label_ids])))
+            logger.info(
+                "ner labels: %s" % " ".join([str(x) for x in ner_label_ids]))
 
         features.append(
             InputFeatures(input_ids=input_ids,
                           input_mask=input_mask,
                           segment_ids=segment_ids,
-                          label_ids=label_ids))
+                          label_ids=label_ids,
+                          ner_label_ids=ner_label_ids))
     return features
 
 
