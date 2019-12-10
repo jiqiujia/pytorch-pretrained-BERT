@@ -238,8 +238,6 @@ def main():
         nb_eval_examples += np.sum(input_mask)
         nb_eval_steps += 1
 
-        if nb_eval_steps > 10:
-            break
 
 
     eval_loss = eval_loss / nb_eval_steps
