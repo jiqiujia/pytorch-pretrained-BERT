@@ -1159,17 +1159,21 @@ class BertForMTTokenClassification(BertPreTrainedModel):
         self.num_ner_labels = num_ner_labels
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        # self.hidden1 = nn.Linear(config.hidden_size, config.hidden_size)
+        self.hidden1 = nn.Linear(config.hidden_size, config.hidden_size)
         self.classifier = nn.Linear(config.hidden_size, num_labels)
-        # self.hidden2 = nn.Linear(config.hidden_size, self.hidden_size)
+        self.hidden2 = nn.Linear(config.hidden_size, config.hidden_size)
         self.ner_classifier = nn.Linear(config.hidden_size, num_ner_labels)
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None, ner_labels=None):
         sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
         sequence_output = self.dropout(sequence_output)
-        logits = self.classifier(sequence_output)
-        ner_logits = self.ner_classifier(sequence_output)
+        # logits = self.classifier(sequence_output)
+        # ner_logits = self.ner_classifier(sequence_output)
+        cls_feat = gelu(self.hidden1(sequence_output))
+        logits = self.classifier(cls_feat)
+        cls_feat_tmp = cls_feat.detach()
+        ner_logits = self.ner_classifier((gelu(self.hidden2(sequence_output)) + cls_feat_tmp) / 2)
 
         if labels is not None and ner_labels is not None:
             loss_fct = CrossEntropyLoss()
