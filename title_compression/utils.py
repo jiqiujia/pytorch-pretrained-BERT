@@ -185,7 +185,7 @@ class TitleCompressionProcessor(DataProcessor):
 
 
 def convert_examples_to_features(examples: InputExample, label_list, bies_list, max_seq_length, tokenizer,
-                                 ner_type_id: dict=None):
+                                 ner_type_id: dict = None):
     """Loads a data file into a list of `InputBatch`s."""
 
     label_map = {label: i for i, label in enumerate(label_list)}
@@ -244,8 +244,9 @@ def convert_examples_to_features(examples: InputExample, label_list, bies_list, 
                 "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
             logger.info("label: %s (id = %s)" % (''.join([str(lb) for lb in example.labels]),
                                                  "".join([str(x) for x in label_ids])))
-            logger.info(
-                "ner labels: %s" % " ".join([str(x) for x in ner_label_ids]))
+            if ner_label_ids is not None:
+                logger.info(
+                    "ner labels: %s" % " ".join([str(x) for x in ner_label_ids]))
 
         features.append(
             InputFeatures(input_ids=input_ids,
