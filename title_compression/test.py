@@ -6,7 +6,6 @@ from title_compression.utils import *
 import argparse
 import torch
 import random
-import math
 from tqdm import tqdm
 
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,

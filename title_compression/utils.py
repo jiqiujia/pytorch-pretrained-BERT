@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import jieba
 from collections import defaultdict
+import re
 
 from pytorch_pretrained_bert.modeling import BertForTokenClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
 
@@ -119,8 +120,9 @@ class DataProcessor(object):
                 lines.append(line)
             return lines
 
-
 class TitleCompressionProcessor(DataProcessor):
+
+    pattern = re.compile(r"[a-z0-9]+")
     def __init__(self, type_words_dict: dict = None, ner_type_id: dict = None):
         if type_words_dict is not None:
             self.type_words_dict = type_words_dict
@@ -134,6 +136,19 @@ class TitleCompressionProcessor(DataProcessor):
                             continue
                     self.word_type_dict[word] = type
         self.ner_type_id = ner_type_id
+
+    def get_title_words(self, title: str):
+        matches = self.pattern.finditer(title)
+        words = []
+        start = 0
+        for m in matches:
+            ms, me = m.span()
+            sub_title = title[start:ms]
+            words += list(jieba.cut(sub_title))
+            words += [title[ms:me]]
+            start = me
+        words += list(jieba.cut(title[start:]))
+        return words
 
     def get_train_examples(self, data_dir):
         """See base class."""
@@ -151,7 +166,7 @@ class TitleCompressionProcessor(DataProcessor):
             lines = fin.readlines()
             for line in lines:
                 line = line.strip().lower()
-                words = list(jieba.cut(line))
+                words = self.get_title_words(line)
                 words = [word for word in words if word in self.word_type_dict]
                 types = [self.word_type_dict.get(word, "") for word in words]
                 text = ''.join(words)
