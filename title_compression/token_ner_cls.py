@@ -41,6 +41,7 @@ def evaluate(model, eval_dataloader, device, global_step, args):
         input_mask = input_mask.to(device)
         segment_ids = segment_ids.to(device)
         label_ids = label_ids.to(device)
+        ner_label_ids = ner_label_ids.to(device)
 
         with torch.no_grad():
             tmp_eval_loss, tmp_ner_loss = model(input_ids, segment_ids, input_mask, label_ids, ner_label_ids)
