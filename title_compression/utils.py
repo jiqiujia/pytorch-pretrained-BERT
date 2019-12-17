@@ -122,7 +122,7 @@ class DataProcessor(object):
 
 class TitleCompressionProcessor(DataProcessor):
 
-    pattern = re.compile(r"[a-z0-9]+")
+    pattern = re.compile(r"[-.a-z0-9]{2,}")
     def __init__(self, type_words_dict: dict = None, ner_type_id: dict = None):
         if type_words_dict is not None:
             self.type_words_dict = type_words_dict
@@ -135,6 +135,7 @@ class TitleCompressionProcessor(DataProcessor):
                         if self.word_type_dict[word] == '品类':
                             continue
                     self.word_type_dict[word] = type
+        print('t恤' in self.word_type_dict)
         self.ner_type_id = ner_type_id
 
     def get_title_words(self, title: str):
