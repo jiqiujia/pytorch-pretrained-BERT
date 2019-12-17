@@ -50,13 +50,13 @@ def evaluate(model, eval_dataloader, device, global_step, args):
 
         logits = logits.detach().cpu().numpy()
         labels = labels.to('cpu').numpy()
-        input_mask = input_mask.to('cpu').numpy()
-        tmp_eval_accuracy = accuracy(logits, labels, input_mask)
+        tgt_mask = tgt_mask.to('cpu').numpy()
+        tmp_eval_accuracy = accuracy(logits, labels, tgt_mask)
 
         eval_loss += tmp_eval_loss.mean().item()
         eval_accuracy += tmp_eval_accuracy
 
-        nb_eval_examples += np.sum(input_mask)
+        nb_eval_examples += np.sum(tgt_mask)
         nb_eval_steps += 1
 
     eval_loss = eval_loss / nb_eval_steps
@@ -111,6 +111,7 @@ def main():
                         help="The maximum total input sequence length after WordPiece tokenization. \n"
                              "Sequences longer than this will be truncated, and sequences shorter \n"
                              "than this will be padded.")
+    parser.add_argument("--max_tgt_length", default=64, type=int)
     parser.add_argument("--type_vocab_size", default=2, type=int)
     parser.add_argument("--do_train",
                         action='store_true',
@@ -292,7 +293,7 @@ def main():
     if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
         eval_examples = processor.get_dev_examples(args.data_dir)
         eval_features = convert_examples_to_features(
-            eval_examples, args.max_seq_length, args.max_seq_length, tokenizer)
+            eval_examples, args.max_seq_length, args.max_tgt_length, tokenizer)
         logger.info("***** Running evaluation *****")
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
@@ -310,7 +311,7 @@ def main():
     global_step = 0
     if args.do_train:
         train_features = convert_examples_to_features(
-            train_examples, args.max_seq_length, args.max_seq_length, tokenizer)
+            train_examples, args.max_seq_length, args.max_tgt_length, tokenizer)
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)

@@ -70,6 +70,9 @@ class BertForLSTMPointer(BertPreTrainedModel):
         self.tgt_embeddings.weight = copy.deepcopy(
             self.bert.embeddings.word_embeddings.weight
         )
+        for p in self.rnn.parameters():
+            if p.dim() > 1:
+                torch.nn.init.xavier_uniform_(p)
 
 
     def forward(self, input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, labels, train=True):
@@ -77,19 +80,19 @@ class BertForLSTMPointer(BertPreTrainedModel):
         # sequence_output = self.dropout(sequence_output)
 
         batch_size = input_ids.shape[0]
-        max_seq_len = input_ids.shape[1]
+        max_tgt_len = tgt_ids.shape[1]
 
         # Lets use zeros as an intial input for sorting example
-        # decoder_hidden = (torch.zeros((self.num_lstm_layers, batch_size, self.hidden_size)),
-        #                   torch.zeros((self.num_lstm_layers, batch_size, self.hidden_size)))
-        encoder_hidden = sequence_output[:, 0].unsqueeze(0).expand((self.num_lstm_layers, batch_size, self.hidden_size)).detach()
-        decoder_hidden = (copy.deepcopy(encoder_hidden), copy.deepcopy(encoder_hidden))
+        decoder_hidden = (torch.zeros((self.num_lstm_layers, batch_size, self.hidden_size)),
+                          torch.zeros((self.num_lstm_layers, batch_size, self.hidden_size)))
+        # encoder_hidden = sequence_output[:, 0].unsqueeze(0).expand((self.num_lstm_layers, batch_size, self.hidden_size)).detach()
+        # decoder_hidden = (copy.deepcopy(encoder_hidden), copy.deepcopy(encoder_hidden))
 
         seq_logits = []
         seq_argmaxs = []
 
-        decoder_input = sequence_output[:, 0].unsqueeze(1)
-        for i in range(max_seq_len):
+        decoder_input = torch.mean(sequence_output, dim=1).unsqueeze(1)
+        for i in range(max_tgt_len):
             # We will simply mask out when calculating attention or max (and loss later)
             # not all input and hiddens, just for simplicity
 
@@ -118,16 +121,15 @@ class BertForLSTMPointer(BertPreTrainedModel):
         seq_argmaxs = torch.stack(seq_argmaxs, 1)
 
         if tgt_ids is not None:
-            loss_fct = CrossEntropyLoss(ignore_index=0)
+            loss_fct = CrossEntropyLoss()
             # Only keep active parts of the loss
-            # if tgt_mask is not None:
-            #     active_loss = tgt_mask.view(-1) == 1
-            #     active_logits = seq_logits.view(-1, self.num_labels)[active_loss]
-            #     active_labels = tgt_ids.view(-1)[active_loss]
-            #     loss = loss_fct(active_logits, active_labels)
-            # else:
-            #     loss = loss_fct(seq_logits.view(-1, self.num_labels), tgt_ids.view(-1))
-            loss = loss_fct(seq_logits, labels)
+            if tgt_mask is not None:
+                active_loss = tgt_mask.view(-1) == 1
+                active_logits = seq_logits.view(-1, self.num_labels)[active_loss]
+                active_labels = labels.view(-1)[active_loss]
+                loss = loss_fct(active_logits, active_labels)
+            else:
+                loss = loss_fct(seq_logits.view(-1, self.num_labels), labels.view(-1))
             return loss, seq_logits
         else:
             return seq_logits
