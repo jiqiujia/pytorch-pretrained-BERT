@@ -200,10 +200,11 @@ def convert_examples_to_features(examples, max_src_length, max_tgt_length, token
         tgt_mask += tgt_padding
 
         labels = []
-        idx = 0
         for tgt_token in tgt_tokens:
-            idx = src_tokens.index(tgt_token, start=idx)
-            labels += [idx]
+            for i, src_token in enumerate(src_tokens):
+                if i not in labels and src_token == tgt_token:
+                    labels += [i]
+                    break
         labels += tgt_padding
         assert len(tgt_ids) == max_tgt_length
         assert len(tgt_mask) == max_tgt_length

@@ -61,19 +61,24 @@ class BertForLSTMPointer(BertPreTrainedModel):
         # self.classifier = nn.Linear(config.hidden_size, num_labels)
         self.attn = Attention(self.hidden_size)
         self.apply(self.init_bert_weights)
-        self.num_lstm_layers = 2
+        self.num_lstm_layers = 1
         self.rnn = nn.LSTM(input_size=config.hidden_size, hidden_size=config.hidden_size, num_layers=self.num_lstm_layers,
                            batch_first=True, bidirectional=False)
         self.tgt_embeddings = nn.Embedding(
             config.vocab_size, config.hidden_size, padding_idx=0
         )
-        self.tgt_embeddings.weight = copy.deepcopy(
-            self.bert.embeddings.word_embeddings.weight
-        )
+        self.tgt_embeddings.weight = self.bert.embeddings.word_embeddings.weight
+        self.softmax = nn.Softmax(dim=-1)
         for p in self.rnn.parameters():
             if p.dim() > 1:
                 torch.nn.init.xavier_uniform_(p)
 
+        for p in self.attn.parameters():
+            if p.dim() > 1:
+                torch.nn.init.xavier_uniform_(p)
+
+        # self.decoder_hidden = nn.Parameter(torch.randn((self.num_lstm_layers, 1, self.hidden_size)))
+        # self.decoder_context = nn.Parameter(torch.randn((self.num_lstm_layers, 1, self.hidden_size)))
 
     def forward(self, input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, labels, train=True):
         sequence_output, _ = self.bert(input_ids, segment_ids, input_mask, output_all_encoded_layers=False)
@@ -92,20 +97,26 @@ class BertForLSTMPointer(BertPreTrainedModel):
         seq_argmaxs = []
 
         decoder_input = torch.mean(sequence_output, dim=1).unsqueeze(1)
+        # self.decoder_hidden = self.decoder_hidden.repeat((self.num_lstm_layers, batch_size, self.hidden_size))
+        # self.decoder_context = self.decoder_context.repeat((self.num_lstm_layers, batch_size, self.hidden_size))
+        # decoder_hidden = (self.decoder_hidden, self.decoder_context)
         for i in range(max_tgt_len):
             # We will simply mask out when calculating attention or max (and loss later)
             # not all input and hiddens, just for simplicity
 
-            # h, c: (batch_size, hidden_size)
+            # h, c: (num_layers, batch_size, hidden_size)
             decoder_output, (h_i, ci) = self.rnn(decoder_input, decoder_hidden)
-            decoder_hidden = (h_i, ci)
 
             # Get a pointer distribution over the encoder outputs using attention
             # (batch_size, max_seq_len)
             logits = self.attn(decoder_output, sequence_output)
+            masked_logits = logits.masked_fill((1 - input_mask).bool(), -1e9)
+            prob_a = self.softmax(masked_logits)
+            ci[-1] = torch.bmm(prob_a.unsqueeze(1), sequence_output).squeeze()
+            decoder_hidden = (h_i, ci)
+
             seq_logits.append(logits)
 
-            masked_logits = logits.masked_fill((1 - input_mask).bool(), -1e7)
             masked_argmax = torch.argmax(masked_logits, dim=1)
 
             seq_argmaxs.append(masked_argmax)
