@@ -61,7 +61,7 @@ class BertForLSTMPointer(BertPreTrainedModel):
         # self.classifier = nn.Linear(config.hidden_size, num_labels)
         self.attn = Attention(self.hidden_size)
         self.apply(self.init_bert_weights)
-        self.num_lstm_layers = 1
+        self.num_lstm_layers = 4
         self.rnn = nn.LSTM(input_size=config.hidden_size, hidden_size=config.hidden_size, num_layers=self.num_lstm_layers,
                            batch_first=True, bidirectional=False)
         self.tgt_embeddings = nn.Embedding(
@@ -80,7 +80,7 @@ class BertForLSTMPointer(BertPreTrainedModel):
         # self.decoder_hidden = nn.Parameter(torch.randn((self.num_lstm_layers, 1, self.hidden_size)))
         # self.decoder_context = nn.Parameter(torch.randn((self.num_lstm_layers, 1, self.hidden_size)))
 
-    def forward(self, input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, labels, train=True):
+    def forward(self, input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_input_ids, ext_tgt_ids, train=True):
         sequence_output, _ = self.bert(input_ids, segment_ids, input_mask, output_all_encoded_layers=False)
         # sequence_output = self.dropout(sequence_output)
 
@@ -100,6 +100,7 @@ class BertForLSTMPointer(BertPreTrainedModel):
         # self.decoder_hidden = self.decoder_hidden.repeat((self.num_lstm_layers, batch_size, self.hidden_size))
         # self.decoder_context = self.decoder_context.repeat((self.num_lstm_layers, batch_size, self.hidden_size))
         # decoder_hidden = (self.decoder_hidden, self.decoder_context)
+
         for i in range(max_tgt_len):
             # We will simply mask out when calculating attention or max (and loss later)
             # not all input and hiddens, just for simplicity
@@ -131,16 +132,20 @@ class BertForLSTMPointer(BertPreTrainedModel):
         seq_logits = torch.stack(seq_logits, 1)
         seq_argmaxs = torch.stack(seq_argmaxs, 1)
 
+        vocab_size = torch.max(ext_input_ids).item() + 1
+        vocab_dist = torch.zeros((batch_size, max_tgt_len, vocab_size))
+        vocab_dist.scatter_add_(2, ext_input_ids.unsqueeze(1).expand_as(seq_logits), seq_logits)
+
         if tgt_ids is not None:
             loss_fct = CrossEntropyLoss()
             # Only keep active parts of the loss
             if tgt_mask is not None:
                 active_loss = tgt_mask.view(-1) == 1
-                active_logits = seq_logits.view(-1, self.num_labels)[active_loss]
-                active_labels = labels.view(-1)[active_loss]
+                active_logits = vocab_dist.view(-1, vocab_size)[active_loss]
+                active_labels = ext_tgt_ids.view(-1)[active_loss]
                 loss = loss_fct(active_logits, active_labels)
             else:
-                loss = loss_fct(seq_logits.view(-1, self.num_labels), labels.view(-1))
-            return loss, seq_logits
+                loss = loss_fct(vocab_dist.view(-1, vocab_size), ext_tgt_ids.view(-1))
+            return loss, vocab_dist
         else:
             return seq_logits

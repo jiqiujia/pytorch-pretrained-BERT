@@ -153,7 +153,6 @@ class BertTokenizer(object):
         tokenizer = cls(resolved_vocab_file, *inputs, **kwargs)
         return tokenizer
 
-
 class BasicTokenizer(object):
     """Runs basic tokenization (punctuation splitting, lower casing, etc.)."""
 
@@ -269,6 +268,90 @@ class BasicTokenizer(object):
             else:
                 output.append(char)
         return "".join(output)
+
+
+class CharTokenizer(BasicTokenizer):
+    def __init__(self, pretrained_model_dir, max_len=None, do_lower_case=True,
+                 never_split=("[UNK]", "[SEP]", "[PAD]", "[CLS]", "[MASK]")):
+        super(CharTokenizer, self).__init__(do_lower_case, never_split)
+        vocab_file = os.path.join(pretrained_model_dir, VOCAB_NAME)
+        self.vocab = load_vocab(vocab_file)
+        self.ids_to_tokens = collections.OrderedDict(
+            [(ids, tok) for tok, ids in self.vocab.items()])
+        self.max_len = max_len if max_len is not None else int(1e12)
+
+    def tokenize(self, text):
+        tokens = super().tokenize(text)
+        char_tokens = []
+        for token in tokens:
+            for ch in token:
+                char_tokens.append(ch)
+        return char_tokens
+
+
+
+    def convert_tokens_to_ids(self, tokens):
+        """Converts a sequence of tokens into ids using the vocab.
+        """
+        ids = []
+        unk_id = self.vocab["[UNK]"]
+        for token in tokens:
+            if token in self.vocab:
+                ids.append(self.vocab[token])
+            else:
+                ids.append(unk_id)
+
+        if len(ids) > self.max_len:
+            raise ValueError(
+                "Token indices sequence length is longer than the specified maximum "
+                " sequence length for this BERT model ({} > {}). Running this"
+                " sequence through BERT will result in indexing errors".format(len(ids), self.max_len)
+            )
+        return ids
+
+    def convert_tokens_to_pointer_ids(self, tokens, article_oovs: list=None):
+        """Converts a sequence of tokens into ids using the vocab.
+        """
+        ids = []
+        oovs = []
+        unk_id = self.vocab["[UNK]"]
+        for token in tokens:
+            if token in self.vocab:
+                ids.append(self.vocab[token])
+            else:
+                if article_oovs is not None:# target
+                    if token in article_oovs:
+                        idx = len(self.vocab) + article_oovs.index(token)
+                        ids.append(idx)
+                    else:
+                        ids.append(unk_id)
+                else:
+                    oovs.append(token)
+                    oov_num = oovs.index(token)
+                    ids.append(len(self.vocab) + oov_num)
+
+        if len(ids) > self.max_len:
+            raise ValueError(
+                "Token indices sequence length is longer than the specified maximum "
+                " sequence length for this BERT model ({} > {}). Running this"
+                " sequence through BERT will result in indexing errors".format(len(ids), self.max_len)
+            )
+        return ids, oovs
+
+
+    def convert_ids_to_tokens(self, ids, article_oovs: None):
+        """Converts a sequence of ids in wordpiece tokens using the vocab."""
+        tokens = []
+        for id in ids:
+            if id in self.vocab:
+                tokens.append(self.ids_to_tokens[id])
+            else:
+                if article_oovs is not None:
+                    article_oov_idx = id - len(self.vocab)
+                    tokens.append(article_oovs[article_oov_idx])
+                else:
+                    tokens.append("[UNK]")
+        return tokens
 
 
 class WordpieceTokenizer(object):

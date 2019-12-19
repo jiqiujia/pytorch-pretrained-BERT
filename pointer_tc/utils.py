@@ -48,30 +48,6 @@ def convert_char_labels_to_token_labels(tokens, labels):
     return token_labels
 
 
-def get_bies_labels(tokens, words):
-    labels = []
-    for word in words:
-        if len(word) == 1:
-            labels += ['S']
-        else:
-            word_labels = ['B'] + ['I'] * (len(word) - 2) + ['E']
-            labels += word_labels
-    return convert_char_labels_to_token_labels(tokens, labels)
-
-
-def get_ner_labels(tokens, words, types, ner_type_id):
-    ner_labels = []
-    for word, type in zip(words, types):
-        if len(type) == 1:
-            ner_labels += ['S_' + type]
-        elif len(type) > 1:
-            ner_labels += ['B_' + type] + ['I_' + type] * (len(word) - 2) + ['E_' + type]
-        else:
-            ner_labels += ['O'] * len(word)
-    ner_labels = np.asarray([ner_type_id.get(type) for type in ner_labels])
-    return convert_char_labels_to_token_labels(tokens, ner_labels)
-
-
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
@@ -86,13 +62,14 @@ class InputExample(object):
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, src_ids, tgt_ids, src_mask, tgt_mask, segment_ids, labels):
+    def __init__(self, src_ids, tgt_ids, src_mask, tgt_mask, segment_ids, ext_src_ids, ext_tgt_ids):
         self.src_ids = src_ids
         self.src_mask = src_mask
         self.tgt_mask = tgt_mask
         self.segment_ids = segment_ids
         self.tgt_ids = tgt_ids
-        self.labels = labels
+        self.ext_src_ids = ext_src_ids
+        self.ext_tgt_ids = ext_tgt_ids
 
 
 class DataProcessor(object):
@@ -154,9 +131,10 @@ class TitleCompressionProcessor(DataProcessor):
                 InputExample(eid="", src=src, tgt=tgt))
         return examples
 
-
 def convert_examples_to_features(examples, max_src_length, max_tgt_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
+    UNK_ID = tokenizer.vocab['[UNK]']
+
     features = []
     for (ex_index, example) in enumerate(examples):
         src_tokens = tokenizer.tokenize(example.src)
@@ -169,6 +147,7 @@ def convert_examples_to_features(examples, max_src_length, max_tgt_length, token
         segment_ids = [0] * len(src_tokens)
 
         src_ids = tokenizer.convert_tokens_to_ids(src_tokens)
+        ext_src_ids, oovs = tokenizer.convert_tokens_to_pointer_ids(src_tokens)
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
@@ -179,16 +158,19 @@ def convert_examples_to_features(examples, max_src_length, max_tgt_length, token
         src_ids += padding
         src_mask += padding
         segment_ids += padding
+        ext_src_ids += padding
 
         assert len(src_ids) == max_src_length
         assert len(src_mask) == max_src_length
         assert len(segment_ids) == max_src_length
+        assert len(ext_src_ids) == max_src_length
 
         tgt_tokens = tokenizer.tokenize(example.tgt)
         if len(tgt_tokens) > max_tgt_length - 2:
             tgt_tokens = tgt_tokens[:(max_tgt_length - 2)]
         tgt_tokens = ["[CLS]"] + tgt_tokens + ["[SEP]"]
         tgt_ids = tokenizer.convert_tokens_to_ids(tgt_tokens)
+        ext_tgt_ids, _ = tokenizer.convert_tokens_to_pointer_ids(tgt_tokens, oovs)
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
@@ -198,17 +180,30 @@ def convert_examples_to_features(examples, max_src_length, max_tgt_length, token
         tgt_padding = [0] * (max_tgt_length - len(tgt_ids))
         tgt_ids += tgt_padding
         tgt_mask += tgt_padding
+        ext_tgt_ids += tgt_padding
 
-        labels = []
-        for tgt_token in tgt_tokens:
-            for i, src_token in enumerate(src_tokens):
-                if i not in labels and src_token == tgt_token:
-                    labels += [i]
-                    break
-        labels += tgt_padding
+        # labels = []
+        # all_match = True
+        # for tgt_token in tgt_tokens:
+        #     match = False
+        #     for i, src_token in enumerate(src_tokens):
+        #         if i not in labels and src_token == tgt_token:
+        #             labels += [i]
+        #             match = True
+        #             break
+        #     if not match:
+        #         logger.error("error token %s" % tgt_token)
+        #         all_match = False
+        #         break
+        # if not all_match:
+        #     logger.error("error line: %s %s" % (" ".join(
+        #         [str(x) for x in src_tokens]), " ".join(
+        #         [str(x) for x in tgt_tokens])))
+        #     continue
+        # labels += tgt_padding
         assert len(tgt_ids) == max_tgt_length
         assert len(tgt_mask) == max_tgt_length
-        assert len(labels) == max_tgt_length
+        assert len(ext_tgt_ids) == max_tgt_length
 
         if ex_index < 5:
             logger.info("*** Example ***")
@@ -224,7 +219,9 @@ def convert_examples_to_features(examples, max_src_length, max_tgt_length, token
             logger.info(
                 "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
             logger.info(
-                "labels: %s" % " ".join([str(x) for x in labels]))
+                "ext_src_ids: %s" % " ".join([str(x) for x in ext_src_ids]))
+            logger.info(
+                "ext_tgt_ids: %s" % " ".join([str(x) for x in ext_tgt_ids]))
 
         features.append(
             InputFeatures(src_ids=src_ids,
@@ -232,7 +229,8 @@ def convert_examples_to_features(examples, max_src_length, max_tgt_length, token
                           tgt_ids=tgt_ids,
                           tgt_mask=tgt_mask,
                           segment_ids=segment_ids,
-                          labels=labels))
+                          ext_src_ids=ext_src_ids,
+                          ext_tgt_ids=ext_tgt_ids))
     return features
 
 

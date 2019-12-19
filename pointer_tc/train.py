@@ -23,7 +23,7 @@ from pointer_tc.utils import *
 from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from pytorch_pretrained_bert.modeling import BertConfig, WEIGHTS_NAME, CONFIG_NAME
 from pytorch_pretrained_bert.modeling_pointer import BertForLSTMPointer
-from pytorch_pretrained_bert.tokenization import BertTokenizer
+from pytorch_pretrained_bert.tokenization import BertTokenizer, CharTokenizer
 from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -36,20 +36,21 @@ def evaluate(model, eval_dataloader, device, global_step, args):
     eval_loss, eval_accuracy = 0, 0
     nb_eval_steps, nb_eval_examples = 0, 0
 
-    for input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, labels in tqdm(eval_dataloader, desc="Evaluating"):
+    for input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids in tqdm(eval_dataloader, desc="Evaluating"):
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
         segment_ids = segment_ids.to(device)
         tgt_ids = tgt_ids.to(device)
         tgt_mask = tgt_mask.to(device)
-        labels = labels.to(device)
+        ext_src_ids = ext_src_ids.to(device)
+        ext_tgt_ids = ext_tgt_ids.to(device)
 
         with torch.no_grad():
-            tmp_eval_loss, logits = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, labels, train=False)
+            tmp_eval_loss, logits = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids, train=False)
             # logits = model(input_ids, segment_ids, input_mask)
 
         logits = logits.detach().cpu().numpy()
-        labels = labels.to('cpu').numpy()
+        labels = ext_tgt_ids.to('cpu').numpy()
         tgt_mask = tgt_mask.to('cpu').numpy()
         tmp_eval_accuracy = accuracy(logits, labels, tgt_mask)
 
@@ -223,7 +224,7 @@ def main():
         raise ValueError("Task not found: %s" % (task_name))
 
     processor = processors[task_name]()
-    tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
+    tokenizer = CharTokenizer(args.bert_model, do_lower_case=args.do_lower_case)
 
     train_examples = None
     num_train_optimization_steps = None
@@ -302,8 +303,10 @@ def main():
         all_tgt_ids = torch.tensor([f.tgt_ids for f in eval_features], dtype=torch.long)
         all_tgt_mask = torch.tensor([f.tgt_mask for f in eval_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-        all_labels = torch.tensor([f.labels for f in eval_features], dtype=torch.long)
-        eval_data = TensorDataset(all_src_ids, all_src_mask, all_segment_ids, all_tgt_ids, all_tgt_mask, all_labels)
+        all_ext_src_ids = torch.tensor([f.ext_src_ids for f in eval_features], dtype=torch.long)
+        all_ext_tgt_ids = torch.tensor([f.ext_tgt_ids for f in eval_features], dtype=torch.long)
+
+        eval_data = TensorDataset(all_src_ids, all_src_mask, all_segment_ids, all_tgt_ids, all_tgt_mask, all_ext_src_ids, all_ext_tgt_ids)
         # Run prediction for full data
         eval_sampler = SequentialSampler(eval_data)
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
@@ -321,8 +324,10 @@ def main():
         all_tgt_ids = torch.tensor([f.tgt_ids for f in train_features], dtype=torch.long)
         all_tgt_mask = torch.tensor([f.tgt_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
-        all_labels = torch.tensor([f.labels for f in train_features], dtype=torch.long)
-        train_data = TensorDataset(all_src_ids, all_src_mask, all_segment_ids, all_tgt_ids, all_tgt_mask, all_labels)
+        all_ext_src_ids = torch.tensor([f.ext_src_ids for f in train_features], dtype=torch.long)
+        all_ext_tgt_ids = torch.tensor([f.ext_tgt_ids for f in train_features], dtype=torch.long)
+
+        train_data = TensorDataset(all_src_ids, all_src_mask, all_segment_ids, all_tgt_ids, all_tgt_mask, all_ext_src_ids, all_ext_tgt_ids)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
@@ -335,8 +340,8 @@ def main():
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
-                input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, labels = batch
-                loss, _ = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, labels)
+                input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids = batch
+                loss, _ = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids)
 
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
