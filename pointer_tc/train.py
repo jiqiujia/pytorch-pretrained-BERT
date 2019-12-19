@@ -32,7 +32,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message
 logger = logging.getLogger(__name__)
 
 
-def evaluate(model, eval_dataloader, device, global_step, args):
+def evaluate(model, eval_dataloader, device, global_step, tokenizer, args):
     eval_loss, eval_accuracy = 0, 0
     nb_eval_steps, nb_eval_examples = 0, 0
 
@@ -46,9 +46,11 @@ def evaluate(model, eval_dataloader, device, global_step, args):
         ext_src_ids = ext_src_ids.to(device)
         ext_tgt_ids = ext_tgt_ids.to(device)
 
+        max_id = torch.max(ext_src_ids) + 1
+        vocab_size = max_id if max_id > len(tokenizer.vocab.items()) else len(tokenizer.vocab.items())
         with torch.no_grad():
             tmp_eval_loss, logits = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids,
-                                          ext_tgt_ids, device, train=False)
+                                          ext_tgt_ids, vocab_size, device, train=False)
             # logits = model(input_ids, segment_ids, input_mask)
 
         logits = logits.detach().cpu().numpy()
@@ -130,7 +132,7 @@ def main():
                         type=int,
                         help="Total batch size for training.")
     parser.add_argument("--eval_batch_size",
-                        default=8,
+                        default=10,
                         type=int,
                         help="Total batch size for eval.")
     parser.add_argument("--eval_step",
@@ -345,7 +347,9 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids = batch
-                loss, _ = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids, device)
+                max_id = torch.max(input_ids).item() + 1
+                vocab_size = max_id if max_id > len(tokenizer.vocab.items()) else len(tokenizer.vocab.items())
+                loss, _ = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids, vocab_size, device)
 
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
@@ -377,7 +381,8 @@ def main():
 
                 if (global_step + 1) % args.eval_step == 0 and eval_dataloader is not None:
                     model.eval()
-                    evaluate(model, eval_dataloader, device, global_step, args)
+                    evaluate(model, eval_dataloader, device, global_step, tokenizer, args)
+                    model.train()
 
             # Save a trained model and the associated configuration
             model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
@@ -394,7 +399,7 @@ def main():
 
     if eval_dataloader is not None:
         model.eval()
-        evaluate(model, eval_dataloader, device, global_step, args)
+        evaluate(model, eval_dataloader, device, global_step, tokenizer, args)
 
 
 if __name__ == "__main__":

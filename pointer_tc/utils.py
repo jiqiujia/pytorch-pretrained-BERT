@@ -133,7 +133,6 @@ class TitleCompressionProcessor(DataProcessor):
 
 def convert_examples_to_features(examples, max_src_length, max_tgt_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
-    UNK_ID = tokenizer.vocab['[UNK]']
 
     features = []
     for (ex_index, example) in enumerate(examples):
@@ -236,6 +235,7 @@ def convert_examples_to_features(examples, max_src_length, max_tgt_length, token
 
 def accuracy(out, labels, mask):
     out = out.argmax(-1)
+    print(out)
     acc = np.sum(np.equal(out, labels) * mask)
     return acc
 
