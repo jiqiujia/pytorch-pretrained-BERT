@@ -61,8 +61,9 @@ class BertForLSTMPointer(BertPreTrainedModel):
         # self.classifier = nn.Linear(config.hidden_size, num_labels)
         self.attn = Attention(self.hidden_size)
         self.apply(self.init_bert_weights)
-        self.num_lstm_layers = 4
-        self.rnn = nn.LSTM(input_size=config.hidden_size, hidden_size=config.hidden_size, num_layers=self.num_lstm_layers,
+        self.num_lstm_layers = 1
+        self.rnn = nn.LSTM(input_size=config.hidden_size, hidden_size=config.hidden_size,
+                           num_layers=self.num_lstm_layers,
                            batch_first=True, bidirectional=False)
         self.tgt_embeddings = nn.Embedding(
             config.vocab_size, config.hidden_size, padding_idx=0
@@ -71,16 +72,17 @@ class BertForLSTMPointer(BertPreTrainedModel):
         self.softmax = nn.Softmax(dim=-1)
         for p in self.rnn.parameters():
             if p.dim() > 1:
-                torch.nn.init.xavier_uniform_(p)
+                torch.nn.init.uniform_(p, -0.01, 0.01)
 
         for p in self.attn.parameters():
             if p.dim() > 1:
-                torch.nn.init.xavier_uniform_(p)
+                torch.nn.init.uniform_(p, -0.01, 0.01)
 
         # self.decoder_hidden = nn.Parameter(torch.randn((self.num_lstm_layers, 1, self.hidden_size)))
         # self.decoder_context = nn.Parameter(torch.randn((self.num_lstm_layers, 1, self.hidden_size)))
 
-    def forward(self, input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_input_ids, ext_tgt_ids, train=True):
+    def forward(self, input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_input_ids, ext_tgt_ids, device,
+                train=True):
         sequence_output, _ = self.bert(input_ids, segment_ids, input_mask, output_all_encoded_layers=False)
         # sequence_output = self.dropout(sequence_output)
 
@@ -88,8 +90,8 @@ class BertForLSTMPointer(BertPreTrainedModel):
         max_tgt_len = tgt_ids.shape[1]
 
         # Lets use zeros as an intial input for sorting example
-        decoder_hidden = (torch.zeros((self.num_lstm_layers, batch_size, self.hidden_size)),
-                          torch.zeros((self.num_lstm_layers, batch_size, self.hidden_size)))
+        decoder_hidden = (torch.zeros((self.num_lstm_layers, batch_size, self.hidden_size)).to(device),
+                          torch.zeros((self.num_lstm_layers, batch_size, self.hidden_size)).to(device))
         # encoder_hidden = sequence_output[:, 0].unsqueeze(0).expand((self.num_lstm_layers, batch_size, self.hidden_size)).detach()
         # decoder_hidden = (copy.deepcopy(encoder_hidden), copy.deepcopy(encoder_hidden))
 
@@ -133,7 +135,7 @@ class BertForLSTMPointer(BertPreTrainedModel):
         seq_argmaxs = torch.stack(seq_argmaxs, 1)
 
         vocab_size = torch.max(ext_input_ids).item() + 1
-        vocab_dist = torch.zeros((batch_size, max_tgt_len, vocab_size))
+        vocab_dist = torch.zeros((batch_size, max_tgt_len, vocab_size)).to(device)
         vocab_dist.scatter_add_(2, ext_input_ids.unsqueeze(1).expand_as(seq_logits), seq_logits)
 
         if tgt_ids is not None:

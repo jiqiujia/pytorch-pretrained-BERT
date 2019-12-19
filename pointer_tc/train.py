@@ -36,7 +36,8 @@ def evaluate(model, eval_dataloader, device, global_step, args):
     eval_loss, eval_accuracy = 0, 0
     nb_eval_steps, nb_eval_examples = 0, 0
 
-    for input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids in tqdm(eval_dataloader, desc="Evaluating"):
+    for input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids in tqdm(eval_dataloader,
+                                                                                                desc="Evaluating"):
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
         segment_ids = segment_ids.to(device)
@@ -46,12 +47,13 @@ def evaluate(model, eval_dataloader, device, global_step, args):
         ext_tgt_ids = ext_tgt_ids.to(device)
 
         with torch.no_grad():
-            tmp_eval_loss, logits = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids, train=False)
+            tmp_eval_loss, logits = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids,
+                                          ext_tgt_ids, device, train=False)
             # logits = model(input_ids, segment_ids, input_mask)
 
         logits = logits.detach().cpu().numpy()
-        labels = ext_tgt_ids.to('cpu').numpy()
-        tgt_mask = tgt_mask.to('cpu').numpy()
+        labels = ext_tgt_ids.cpu().numpy()
+        tgt_mask = tgt_mask.cpu().numpy()
         tmp_eval_accuracy = accuracy(logits, labels, tgt_mask)
 
         eval_loss += tmp_eval_loss.mean().item()
@@ -306,7 +308,8 @@ def main():
         all_ext_src_ids = torch.tensor([f.ext_src_ids for f in eval_features], dtype=torch.long)
         all_ext_tgt_ids = torch.tensor([f.ext_tgt_ids for f in eval_features], dtype=torch.long)
 
-        eval_data = TensorDataset(all_src_ids, all_src_mask, all_segment_ids, all_tgt_ids, all_tgt_mask, all_ext_src_ids, all_ext_tgt_ids)
+        eval_data = TensorDataset(all_src_ids, all_src_mask, all_segment_ids, all_tgt_ids, all_tgt_mask,
+                                  all_ext_src_ids, all_ext_tgt_ids)
         # Run prediction for full data
         eval_sampler = SequentialSampler(eval_data)
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
@@ -327,7 +330,8 @@ def main():
         all_ext_src_ids = torch.tensor([f.ext_src_ids for f in train_features], dtype=torch.long)
         all_ext_tgt_ids = torch.tensor([f.ext_tgt_ids for f in train_features], dtype=torch.long)
 
-        train_data = TensorDataset(all_src_ids, all_src_mask, all_segment_ids, all_tgt_ids, all_tgt_mask, all_ext_src_ids, all_ext_tgt_ids)
+        train_data = TensorDataset(all_src_ids, all_src_mask, all_segment_ids, all_tgt_ids, all_tgt_mask,
+                                   all_ext_src_ids, all_ext_tgt_ids)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
@@ -341,7 +345,7 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids = batch
-                loss, _ = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids)
+                loss, _ = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids, device)
 
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
