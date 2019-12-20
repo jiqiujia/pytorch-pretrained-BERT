@@ -249,6 +249,9 @@ def main():
                                                cache_dir=cache_dir,
                                                num_labels=args.max_seq_length,
                                                state_dict=state_dict)
+    for name, param in model.named_parameters():
+        if 'bert' not in name:
+            torch.nn.init.uniform_(param, -0.1, 0.1)
     if args.fp16:
         model.half()
     model.to(device)
@@ -340,63 +343,62 @@ def main():
             train_sampler = DistributedSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
-        with torch.autograd.set_detect_anomaly(True):
-            for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
-                model.train()
-                tr_loss = 0
-                nb_tr_examples, nb_tr_steps = 0, 0
-                for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                    batch = tuple(t.to(device) for t in batch)
-                    input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids = batch
-                    max_id = torch.max(input_ids).item() + 1
-                    vocab_size = max_id if max_id > len(tokenizer.vocab.items()) else len(tokenizer.vocab.items())
-                    loss, _ = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids, vocab_size, device)
+        for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
+            model.train()
+            tr_loss = 0
+            nb_tr_examples, nb_tr_steps = 0, 0
+            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+                batch = tuple(t.to(device) for t in batch)
+                input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids = batch
+                max_id = torch.max(input_ids).item() + 1
+                vocab_size = max_id if max_id > len(tokenizer.vocab.items()) else len(tokenizer.vocab.items())
+                loss, _ = model(input_ids, input_mask, segment_ids, tgt_ids, tgt_mask, ext_src_ids, ext_tgt_ids, vocab_size, device)
 
-                    if n_gpu > 1:
-                        loss = loss.mean()  # mean() to average on multi-gpu.
-                    if args.gradient_accumulation_steps > 1:
-                        loss = loss / args.gradient_accumulation_steps
+                if n_gpu > 1:
+                    loss = loss.mean()  # mean() to average on multi-gpu.
+                if args.gradient_accumulation_steps > 1:
+                    loss = loss / args.gradient_accumulation_steps
 
+                if args.fp16:
+                    optimizer.backward(loss)
+                else:
+                    loss.backward()
+
+                tr_loss += loss.item()
+                nb_tr_examples += input_ids.size(0)
+                nb_tr_steps += 1
+                logger.info('epoch %d global_step %d lr %.8f loss %.3f',
+                            epoch, global_step, optimizer.get_lr()[0],
+                            tr_loss / nb_tr_steps, )
+                if (step + 1) % args.gradient_accumulation_steps == 0:
                     if args.fp16:
-                        optimizer.backward(loss)
-                    else:
-                        loss.backward()
+                        # modify learning rate with special warm up BERT uses
+                        # if args.fp16 is False, BertAdam is used that handles this automatically
+                        lr_this_step = args.learning_rate * warmup_linear(global_step / num_train_optimization_steps,
+                                                                          args.warmup_proportion)
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = lr_this_step
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    global_step += 1
 
-                    tr_loss += loss.item()
-                    nb_tr_examples += input_ids.size(0)
-                    nb_tr_steps += 1
-                    logger.info('epoch %d global_step %d lr %.8f loss %.3f',
-                                epoch, global_step, optimizer.get_lr()[0],
-                                tr_loss / nb_tr_steps, )
-                    if (step + 1) % args.gradient_accumulation_steps == 0:
-                        if args.fp16:
-                            # modify learning rate with special warm up BERT uses
-                            # if args.fp16 is False, BertAdam is used that handles this automatically
-                            lr_this_step = args.learning_rate * warmup_linear(global_step / num_train_optimization_steps,
-                                                                              args.warmup_proportion)
-                            for param_group in optimizer.param_groups:
-                                param_group['lr'] = lr_this_step
-                        optimizer.step()
-                        optimizer.zero_grad()
-                        global_step += 1
+                if (global_step + 1) % args.eval_step == 0 and eval_dataloader is not None:
+                    model.eval()
+                    evaluate(model, eval_dataloader, device, global_step, tokenizer, args)
+                    model.train()
 
-                    if (global_step + 1) % args.eval_step == 0 and eval_dataloader is not None:
-                        model.eval()
-                        evaluate(model, eval_dataloader, device, global_step, tokenizer, args)
-                        model.train()
+            # Save a trained model and the associated configuration
+            model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+            output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
+            torch.save(model_to_save.state_dict(), output_model_file)
+            output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
+            with open(output_config_file, 'w') as f:
+                f.write(model_to_save.config.to_json_string())
 
-                # Save a trained model and the associated configuration
-                model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
-                output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
-                torch.save(model_to_save.state_dict(), output_model_file)
-                output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
-                with open(output_config_file, 'w') as f:
-                    f.write(model_to_save.config.to_json_string())
-
-                # Load a trained model and config that you have fine-tuned
-                # config = BertConfig(output_config_file)
-                # model = BertForTokenClassification(config, num_labels=num_labels)
-                # model.load_state_dict(torch.load(output_model_file))
+            # Load a trained model and config that you have fine-tuned
+            # config = BertConfig(output_config_file)
+            # model = BertForTokenClassification(config, num_labels=num_labels)
+            # model.load_state_dict(torch.load(output_model_file))
 
     if eval_dataloader is not None:
         model.eval()
