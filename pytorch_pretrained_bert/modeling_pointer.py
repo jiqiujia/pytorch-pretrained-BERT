@@ -35,20 +35,20 @@ class Attention(nn.Module):
         self.hidden_size = hidden_size
         self.W1 = nn.Linear(hidden_size, hidden_size, bias=False)
         self.W2 = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.tanh_bias = nn.Parameter(torch.randn(hidden_size))
-        self.vt = nn.Linear(hidden_size, 1, bias=True)
+        self.vt = nn.Linear(hidden_size, 1, bias=False)
 
     def forward(self, decoder_state, encoder_outputs):
         # (batch_size, max_seq_len, hidden_size)
-        encoder_transform = self.W1(encoder_outputs)
+        # encoder_transform = self.W1(encoder_outputs)
 
         # (batch_size, 1 (unsqueezed), hidden_size)
-        decoder_transform = self.W2(decoder_state)
+        # decoder_transform = self.W2(decoder_state)
 
         # 1st line of Eq.(3) in the paper
         # (batch_size, max_seq_len, 1) => (batch_size, max_seq_len)
-        logits = self.vt(torch.tanh(encoder_transform + decoder_transform + self.tanh_bias)).squeeze(-1)
+        # logits = self.vt(torch.tanh(encoder_transform + decoder_transform)).squeeze(-1)
 
+        logits = torch.bmm(decoder_state, self.W1(encoder_outputs).transpose(1,2)).squeeze()
         return logits
 
 
@@ -77,9 +77,14 @@ class BertForLSTMPointer(BertPreTrainedModel):
         self.W1 = nn.Linear(config.hidden_size, config.hidden_size)
         self.W2 = nn.Linear(config.hidden_size, config.hidden_size)
 
-        # for p in self.decoder_rnn.parameters():
-        #     if p.dim() > 1:
-        #         torch.nn.init.uniform_(p, -0.02, 0.02)
+
+        for p in self.encoder_rnn.parameters():
+            if p.dim() > 1:
+                torch.nn.init.uniform_(p, -0.1, 0.1)
+
+        for p in self.decoder_rnn.parameters():
+            if p.dim() > 1:
+                torch.nn.init.uniform_(p, -0.1, 0.1)
         #
         # for p in self.attn.parameters():
         #     if p.dim() > 1:
@@ -134,7 +139,7 @@ class BertForLSTMPointer(BertPreTrainedModel):
             else:
                 masked_logits = logits.masked_fill((1 - input_mask).byte(), -1e7)
             prob_a = self.softmax(masked_logits)
-            ci[-1] = torch.bmm(prob_a.unsqueeze(1), sequence_output).squeeze()
+            context = torch.bmm(prob_a.unsqueeze(1), sequence_output).squeeze()
 
             seq_logits.append(masked_logits)
             seq_probs.append(prob_a)
@@ -146,11 +151,11 @@ class BertForLSTMPointer(BertPreTrainedModel):
             # (batch_size, hidden_size)
             if train:
                 decoder_input = self.tgt_embeddings(tgt_ids[:, i].unsqueeze(1))
-                decoder_input = self.W1(decoder_input) + self.W2(ci[-1].unsqueeze(1))
+                # decoder_input = self.W1(decoder_input) + self.W2(context.unsqueeze(1))
             else:
                 decoder_input = torch.gather(input_ids, dim=1, index=masked_argmax.unsqueeze(1))
                 decoder_input = self.tgt_embeddings(decoder_input)
-                decoder_input = self.W1(decoder_input) + self.W2(ci[-1].unsqueeze(1))
+                # decoder_input = self.W1(decoder_input) + self.W2(context.unsqueeze(1))
 
         seq_logits = torch.stack(seq_logits, 1)
         seq_probs = torch.stack(seq_probs, 1)
@@ -174,9 +179,9 @@ class BertForLSTMPointer(BertPreTrainedModel):
                 active_loss = tgt_mask.view(-1) == 1
                 active_logits = vocab_dist.view(-1, vocab_size)[active_loss]
                 active_labels = ext_tgt_ids.view(-1)[active_loss]
-                loss = loss_fct(active_logits, active_labels) + 1 * coverage_loss
+                loss = loss_fct(active_logits, active_labels) #+ 1 * coverage_loss
             else:
-                loss = loss_fct(vocab_dist.view(-1, vocab_size), ext_tgt_ids.view(-1)) + 1 * coverage_loss
+                loss = loss_fct(vocab_dist.view(-1, vocab_size), ext_tgt_ids.view(-1)) #+ 1 * coverage_loss
             return loss, vocab_dist
         else:
             return seq_logits
